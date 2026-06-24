@@ -340,11 +340,23 @@ def upsert_events(events: Iterable[Event]) -> tuple[int, int]:
 
 
 def _rest_upsert(events_list: list[Event]) -> tuple[int, int]:
-    """Batch-upsert via Supabase REST API (PostgREST on_conflict=hash)."""
+    """Batch-upsert via Supabase REST API (PostgREST on_conflict=hash).
+
+    Deduplicates within the batch first — PostgreSQL raises 21000 if the same
+    constrained row appears twice in a single ON CONFLICT DO UPDATE statement.
+    """
     client = _get_rest_client()
+
+    # Deduplicate by hash (last-one-wins for any within-batch collision)
+    seen: dict[str, dict] = {}
+    for ev in events_list:
+        row = ev.to_row()
+        seen[row["hash"]] = row
+    unique = list(seen.values())
+
     total = 0
-    for i in range(0, len(events_list), _REST_BATCH):
-        batch = [ev.to_row() for ev in events_list[i : i + _REST_BATCH]]
+    for i in range(0, len(unique), _REST_BATCH):
+        batch = unique[i : i + _REST_BATCH]
         client.table("events").upsert(batch, on_conflict="hash").execute()
         total += len(batch)
     # REST upsert can't easily distinguish insert vs update — report as inserted
