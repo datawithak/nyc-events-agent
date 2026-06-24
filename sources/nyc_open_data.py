@@ -5,6 +5,7 @@ Dataset: https://data.cityofnewyork.us/City-Government/NYC-Permitted-Event-Infor
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timedelta
 from typing import Iterator
 
@@ -17,6 +18,14 @@ from utils.http import get_json
 
 log = logging.getLogger(__name__)
 ENDPOINT = "https://data.cityofnewyork.us/resource/tvpp-9vvx.json"
+
+# Park permit bookings (sports field reservations, court time) are NOT
+# public spectator events — filter them out.
+_PARK_PERMIT = re.compile(
+    r"^(softball|baseball|basketball|tennis|volleyball|hockey|bocce|"
+    r"football|soccer|cricket|handball|lacrosse|rugby|archery)\s*[-–]",
+    re.IGNORECASE,
+)
 
 
 class NYCOpenData(Source):
@@ -44,6 +53,9 @@ class NYCOpenData(Source):
             return
         seen = set()
         for raw in rows:
+            title = (raw.get("event_name") or "").strip()
+            if _PARK_PERMIT.match(title):
+                continue  # skip sports field / court permit bookings
             ev = self._parse(raw)
             if ev.hash in seen:  # collapse multi-day permits to one row
                 continue
