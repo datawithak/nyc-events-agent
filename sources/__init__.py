@@ -16,6 +16,7 @@ from sources import (  # noqa: F401
     city_parks_foundation,
     yelp_events,
     secret_nyc,
+    lincoln_center,
 )
 
 # Disabled by default — endpoints are bot-blocked or require a calendar ID.

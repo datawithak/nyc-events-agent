@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import contextmanager
 from typing import Iterable, Iterator
 
@@ -10,7 +11,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 from psycopg2.pool import SimpleConnectionPool
 
-from config import SUPABASE_URL
+from config import SUPABASE_POOLER_URL, SUPABASE_URL
 from models import Event
 
 log = logging.getLogger("nyc_events")
@@ -19,12 +20,89 @@ log = logging.getLogger("nyc_events")
 _pool: SimpleConnectionPool | None = None
 
 
+def _build_pooler_url(url: str) -> str | None:
+    """Auto-derive the Supabase transaction-pooler URL from a direct DB URL.
+
+    Direct:  postgresql://postgres:PASS@db.REF.supabase.co:5432/postgres
+    Pooler:  postgresql://postgres.REF:PASS@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+
+    The transaction pooler (port 6543) uses IPv4 and is reachable from
+    GitHub Actions, whereas the direct DB (port 5432) may be IPv6-only.
+    """
+    m = re.match(
+        r"(postgresql|postgres)://([^:@]+):([^@]+)"
+        r"@db\.([a-z0-9]+)\.supabase\.co(?::\d+)?/(\S+)",
+        url,
+    )
+    if not m:
+        return None
+    _scheme, _user, password, ref, dbname = m.groups()
+    return (
+        f"postgresql://postgres.{ref}:{password}"
+        f"@aws-0-us-east-1.pooler.supabase.com:6543/{dbname}"
+    )
+
+
+def _try_pool(url: str) -> SimpleConnectionPool:
+    """Create a connection pool and verify it can reach the DB."""
+    pool = SimpleConnectionPool(1, 10, url)
+    # SimpleConnectionPool opens minconn=1 connections eagerly; if that
+    # succeeded we have a live pool.  Return it directly.
+    return pool
+
+
 def _get_pool() -> SimpleConnectionPool:
-    """Lazy-init connection pool."""
+    """Lazy-init connection pool.
+
+    Connection priority:
+      1. SUPABASE_POOLER_URL env var (explicit override — set this in
+         GitHub Actions secrets to bypass IPv6 routing issues).
+      2. SUPABASE_URL directly (works from local Mac / any IPv6-capable host).
+      3. Auto-constructed pooler URL derived from SUPABASE_URL (fallback for
+         GitHub-hosted runners which cannot reach Supabase port 5432 over IPv6).
+    """
     global _pool
-    if _pool is None:
-        _pool = SimpleConnectionPool(1, 10, SUPABASE_URL)
-    return _pool
+    if _pool is not None:
+        return _pool
+
+    # 1 — explicit pooler URL
+    if SUPABASE_POOLER_URL:
+        log.info("Connecting via explicit SUPABASE_POOLER_URL")
+        _pool = _try_pool(SUPABASE_POOLER_URL)
+        return _pool
+
+    # 2 — direct connection
+    try:
+        _pool = _try_pool(SUPABASE_URL)
+        return _pool
+    except psycopg2.OperationalError as exc:
+        err_lower = str(exc).lower()
+        if not any(kw in err_lower for kw in ("unreachable", "timeout", "refused", "network")):
+            raise  # unexpected error — surface it immediately
+        log.warning(
+            "Direct Supabase connection failed (%s); trying transaction pooler …", exc
+        )
+
+    # 3 — auto-construct pooler URL
+    pooler_url = _build_pooler_url(SUPABASE_URL)
+    if pooler_url:
+        try:
+            _pool = _try_pool(pooler_url)
+            log.info("Connected via auto-derived Supabase transaction pooler")
+            return _pool
+        except psycopg2.OperationalError as exc2:
+            log.error("Pooler connection also failed: %s", exc2)
+            raise RuntimeError(
+                "Cannot connect to Supabase via direct URL or pooler. "
+                "Set SUPABASE_POOLER_URL in your environment to the "
+                "Transaction Pooler connection string from "
+                "Supabase → Settings → Database."
+            ) from exc2
+
+    raise RuntimeError(
+        "SUPABASE_URL does not look like a Supabase psycopg2 URL. "
+        "Check Settings → Database → Connection string → Psycopg2."
+    )
 
 
 @contextmanager

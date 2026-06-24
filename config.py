@@ -9,13 +9,18 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
-# Supabase PostgreSQL connection string
+# Supabase PostgreSQL connection string (direct, port 5432)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 if not SUPABASE_URL:
     raise ValueError(
         "SUPABASE_URL not set in .env. "
         "Get it from Supabase dashboard: Settings → Database → Psycopg2"
     )
+
+# Optional: Transaction Pooler URL (port 6543, IPv4) — required for GitHub Actions.
+# Get from Supabase → Settings → Database → Connection string → Transaction pooler.
+# If set, db.py uses it instead of the direct URL.
+SUPABASE_POOLER_URL = os.getenv("SUPABASE_POOLER_URL", "").strip()
 
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
