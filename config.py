@@ -22,6 +22,12 @@ if not SUPABASE_URL:
 # If set, db.py uses it instead of the direct URL.
 SUPABASE_POOLER_URL = os.getenv("SUPABASE_POOLER_URL", "").strip()
 
+# Supabase REST API (PostgREST over HTTPS, port 443 — works everywhere including
+# GitHub Actions which cannot reach the IPv6-only direct DB on port 5432).
+# Used as a fallback when psycopg2 cannot connect.
+SUPABASE_API_URL  = os.getenv("SUPABASE_API_URL",  "").strip()
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
+
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 

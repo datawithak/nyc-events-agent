@@ -1,4 +1,13 @@
-"""Supabase PostgreSQL layer. Schema is created on import; upserts dedupe by event hash."""
+"""Supabase PostgreSQL layer.
+
+Two connectivity modes
+─────────────────────
+1. psycopg2 (direct)  — used locally; Supabase's DB host is IPv6-only so
+   this fails on GitHub-hosted runners that can't route IPv6.
+2. REST API (fallback) — Supabase's PostgREST endpoint runs on HTTPS/443
+   which is always IPv4-reachable. Requires SUPABASE_API_URL + SUPABASE_ANON_KEY.
+   The anon role must have INSERT/UPDATE/DELETE grants (done once from local Mac).
+"""
 from __future__ import annotations
 
 import json
@@ -11,10 +20,30 @@ import psycopg2
 from psycopg2.extras import execute_values
 from psycopg2.pool import SimpleConnectionPool
 
-from config import SUPABASE_POOLER_URL, SUPABASE_URL
+from config import SUPABASE_ANON_KEY, SUPABASE_API_URL, SUPABASE_POOLER_URL, SUPABASE_URL
 from models import Event
 
 log = logging.getLogger("nyc_events")
+
+# ── REST API client (lazy) ─────────────────────────────────────────────────────
+_rest_client = None
+_rest_mode   = False   # set to True once psycopg2 fails and REST succeeds
+
+
+def _get_rest_client():
+    """Return a supabase-py client for REST API access (IPv4-safe fallback)."""
+    global _rest_client
+    if _rest_client is not None:
+        return _rest_client
+    if not SUPABASE_API_URL or not SUPABASE_ANON_KEY:
+        raise RuntimeError(
+            "REST API fallback requires SUPABASE_API_URL and SUPABASE_ANON_KEY env vars. "
+            "Add them to GitHub Secrets."
+        )
+    from supabase import create_client  # imported lazily so psycopg2-only installs still work
+    _rest_client = create_client(SUPABASE_API_URL, SUPABASE_ANON_KEY)
+    log.info("Supabase REST API client initialized (IPv4 fallback mode)")
+    return _rest_client
 
 # Connection pool for Supabase
 _pool: SimpleConnectionPool | None = None
@@ -127,17 +156,34 @@ def _get_pool() -> SimpleConnectionPool:
             last_exc = exc_p
             _pool = None
 
-    raise RuntimeError(
-        "Cannot connect to Supabase via direct URL or any pooler region. "
-        "Set SUPABASE_POOLER_URL in GitHub Secrets to the Transaction Pooler "
-        "connection string from Supabase → Settings → Database."
-    ) from last_exc
+    # 4 — fall through to REST API mode (no exception raised here; callers check _rest_mode)
+    global _rest_mode
+    log.warning(
+        "All psycopg2 connection attempts failed. "
+        "Switching to Supabase REST API mode (HTTPS/IPv4). "
+        "DDL operations (init_db) will be skipped — run them locally once."
+    )
+    _rest_mode = True
+    return None  # type: ignore[return-value]  — callers must check _rest_mode
+
+
+def _is_rest_mode() -> bool:
+    """Return True if the REST API fallback is active."""
+    if _rest_mode:
+        return True
+    # Trigger lazy init so _rest_mode is set if needed
+    _get_pool()
+    return _rest_mode
 
 
 @contextmanager
 def connect() -> Iterator[psycopg2.extensions.connection]:
-    """Get connection from pool."""
+    """Get connection from pool (psycopg2 mode only)."""
     pool = _get_pool()
+    if _rest_mode or pool is None:
+        raise RuntimeError(
+            "connect() called in REST API mode — use upsert_events() directly."
+        )
     conn = pool.getconn()
     try:
         yield conn
@@ -150,7 +196,14 @@ def connect() -> Iterator[psycopg2.extensions.connection]:
 
 
 def init_db() -> None:
-    """Create schema if it doesn't exist."""
+    """Create schema if it doesn't exist.
+
+    In REST API mode (GitHub Actions), schema DDL is skipped — the schema is
+    expected to exist already from a prior local run.
+    """
+    if _is_rest_mode():
+        log.info("REST API mode: skipping init_db (schema managed from local env)")
+        return
     schema = """
     CREATE TABLE IF NOT EXISTS events (
         id              SERIAL PRIMARY KEY,
@@ -209,102 +262,76 @@ def init_db() -> None:
     log.info("Database schema initialized")
 
 
+_REST_BATCH = 200  # rows per POST in REST API mode
+
+
 def upsert_events(events: Iterable[Event]) -> tuple[int, int]:
-    """Upsert events, deduping by hash. Returns (inserted, updated)."""
-    inserted = updated = 0
+    """Upsert events, deduping by hash. Returns (inserted, updated).
+
+    In psycopg2 mode  — checks existence then INSERT/UPDATE per row.
+    In REST API mode  — batched upsert via PostgREST (on_conflict=hash).
+    """
     events_list = list(events)
     if not events_list:
         return 0, 0
 
+    if _is_rest_mode():
+        return _rest_upsert(events_list)
+
+    inserted = updated = 0
     with connect() as conn:
         with conn.cursor() as cur:
             for ev in events_list:
                 row = ev.to_row()
-                # Check if exists
                 cur.execute("SELECT id FROM events WHERE hash = %s", (row["hash"],))
                 existing = cur.fetchone()
 
                 if existing:
-                    # UPDATE
-                    update_sql = """
-                    UPDATE events SET
-                        title=%s, description=%s, url=%s,
-                        image_url=%s, start_utc=%s, end_utc=%s,
-                        start_local=%s, venue_name=%s,
-                        address=%s, borough=%s, lat=%s, lon=%s,
-                        is_free=%s, price_min=%s, price_max=%s,
-                        currency=%s, categories=%s, audiences=%s,
-                        age_min=%s, age_max=%s, raw=%s,
-                        last_seen_utc=NOW()
-                    WHERE hash=%s
-                    """
                     cur.execute(
-                        update_sql,
+                        """
+                        UPDATE events SET
+                            title=%s, description=%s, url=%s,
+                            image_url=%s, start_utc=%s, end_utc=%s,
+                            start_local=%s, venue_name=%s,
+                            address=%s, borough=%s, lat=%s, lon=%s,
+                            is_free=%s, price_min=%s, price_max=%s,
+                            currency=%s, categories=%s, audiences=%s,
+                            age_min=%s, age_max=%s, raw=%s,
+                            last_seen_utc=NOW()
+                        WHERE hash=%s
+                        """,
                         (
-                            row["title"],
-                            row["description"],
-                            row["url"],
-                            row["image_url"],
-                            row["start_utc"],
-                            row["end_utc"],
-                            row["start_local"],
-                            row["venue_name"],
-                            row["address"],
-                            row["borough"],
-                            row["lat"],
-                            row["lon"],
-                            row["is_free"],
-                            row["price_min"],
-                            row["price_max"],
-                            row["currency"],
-                            row["categories"],
-                            row["audiences"],
-                            row["age_min"],
-                            row["age_max"],
-                            row["raw"],
+                            row["title"], row["description"], row["url"],
+                            row["image_url"], row["start_utc"], row["end_utc"],
+                            row["start_local"], row["venue_name"],
+                            row["address"], row["borough"], row["lat"], row["lon"],
+                            row["is_free"], row["price_min"], row["price_max"],
+                            row["currency"], row["categories"], row["audiences"],
+                            row["age_min"], row["age_max"], row["raw"],
                             row["hash"],
                         ),
                     )
                     updated += 1
                 else:
-                    # INSERT
-                    insert_sql = """
-                    INSERT INTO events
-                    (hash, source, source_id, title, description, url, image_url,
-                     start_utc, end_utc, start_local, venue_name, address, borough,
-                     lat, lon, is_free, price_min, price_max, currency, categories,
-                     audiences, age_min, age_max, raw)
-                    VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                     %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """
                     cur.execute(
-                        insert_sql,
+                        """
+                        INSERT INTO events
+                        (hash, source, source_id, title, description, url, image_url,
+                         start_utc, end_utc, start_local, venue_name, address, borough,
+                         lat, lon, is_free, price_min, price_max, currency, categories,
+                         audiences, age_min, age_max, raw)
+                        VALUES
+                        (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
                         (
-                            row["hash"],
-                            row["source"],
-                            row["source_id"],
-                            row["title"],
-                            row["description"],
-                            row["url"],
-                            row["image_url"],
-                            row["start_utc"],
-                            row["end_utc"],
-                            row["start_local"],
-                            row["venue_name"],
-                            row["address"],
-                            row["borough"],
-                            row["lat"],
-                            row["lon"],
-                            row["is_free"],
-                            row["price_min"],
-                            row["price_max"],
-                            row["currency"],
-                            row["categories"],
-                            row["audiences"],
-                            row["age_min"],
-                            row["age_max"],
-                            row["raw"],
+                            row["hash"], row["source"], row["source_id"],
+                            row["title"], row["description"], row["url"],
+                            row["image_url"], row["start_utc"], row["end_utc"],
+                            row["start_local"], row["venue_name"], row["address"],
+                            row["borough"], row["lat"], row["lon"],
+                            row["is_free"], row["price_min"], row["price_max"],
+                            row["currency"], row["categories"], row["audiences"],
+                            row["age_min"], row["age_max"], row["raw"],
                         ),
                     )
                     inserted += 1
@@ -312,8 +339,35 @@ def upsert_events(events: Iterable[Event]) -> tuple[int, int]:
     return inserted, updated
 
 
+def _rest_upsert(events_list: list[Event]) -> tuple[int, int]:
+    """Batch-upsert via Supabase REST API (PostgREST on_conflict=hash)."""
+    client = _get_rest_client()
+    total = 0
+    for i in range(0, len(events_list), _REST_BATCH):
+        batch = [ev.to_row() for ev in events_list[i : i + _REST_BATCH]]
+        client.table("events").upsert(batch, on_conflict="hash").execute()
+        total += len(batch)
+    # REST upsert can't easily distinguish insert vs update — report as inserted
+    return total, 0
+
+
 def record_run(source: str, inserted: int, updated: int, errors: int, note: str = "") -> None:
-    """Record a source run."""
+    """Record a source run in source_runs table."""
+    if _is_rest_mode():
+        from datetime import datetime, timezone
+        try:
+            _get_rest_client().table("source_runs").insert({
+                "source": source,
+                "finished_utc": datetime.now(timezone.utc).isoformat(),
+                "inserted": inserted,
+                "updated": updated,
+                "errors": errors,
+                "note": note,
+            }).execute()
+        except Exception as e:
+            log.warning("record_run (REST) failed: %s", e)
+        return
+
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -327,6 +381,23 @@ def record_run(source: str, inserted: int, updated: int, errors: int, note: str 
 
 def purge_past_events() -> int:
     """Delete events whose start time has already passed. Returns count removed."""
+    if _is_rest_mode():
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            result = (
+                _get_rest_client()
+                .table("events")
+                .delete()
+                .not_.is_("start_utc", "null")
+                .lt("start_utc", now_iso)
+                .execute()
+            )
+            return len(result.data) if result.data else 0
+        except Exception as e:
+            log.warning("purge_past_events (REST) failed: %s", e)
+            return 0
+
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -337,6 +408,15 @@ def purge_past_events() -> int:
 
 def event_counts() -> dict:
     """Get summary stats."""
+    if _is_rest_mode():
+        try:
+            r = _get_rest_client().table("events").select("*", count="exact").execute()
+            total = r.count or 0
+            return {"total": total, "by_source": {}, "by_borough": {}, "free": "?"}
+        except Exception as e:
+            log.warning("event_counts (REST) failed: %s", e)
+            return {"total": "?", "by_source": {}, "by_borough": {}, "free": "?"}
+
     with connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM events")

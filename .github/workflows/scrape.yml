@@ -27,12 +27,13 @@ jobs:
 
       - name: Run scraper
         env:
-          # Direct DB URL (local / IPv6-capable hosts)
+          # Direct DB URL — works from local Mac (IPv6). Fails on GitHub runners (IPv6-only host).
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          # Transaction Pooler URL (IPv4, required for GitHub-hosted runners).
-          # Get from Supabase → Settings → Database → Connection string → Transaction pooler.
-          # If left unset the scraper auto-derives it from SUPABASE_URL (us-east-1 assumed).
-          SUPABASE_POOLER_URL: ${{ secrets.SUPABASE_POOLER_URL }}
+          # REST API fallback (HTTPS/IPv4) — used automatically when psycopg2 can't connect.
+          # Get SUPABASE_API_URL from the Supabase project URL (e.g. https://xxx.supabase.co)
+          # Get SUPABASE_ANON_KEY from Supabase → Settings → API → anon public key
+          SUPABASE_API_URL: ${{ secrets.SUPABASE_API_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
           SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
           SEATGEEK_CLIENT_SECRET: ${{ secrets.SEATGEEK_CLIENT_SECRET }}
