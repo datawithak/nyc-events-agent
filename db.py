@@ -20,14 +20,17 @@ log = logging.getLogger("nyc_events")
 _pool: SimpleConnectionPool | None = None
 
 
-def _build_pooler_url(url: str) -> str | None:
-    """Auto-derive the Supabase transaction-pooler URL from a direct DB URL.
+def _build_pooler_urls(url: str) -> list[str]:
+    """Auto-derive candidate Supabase transaction-pooler URLs from a direct DB URL.
 
     Direct:  postgresql://postgres:PASS@db.REF.supabase.co:5432/postgres
-    Pooler:  postgresql://postgres.REF:PASS@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+    Pooler:  postgresql://postgres.REF:PASS@aws-0-REGION.pooler.supabase.com:6543/postgres
 
     The transaction pooler (port 6543) uses IPv4 and is reachable from
     GitHub Actions, whereas the direct DB (port 5432) may be IPv6-only.
+    We try all Supabase AWS regions; each attempt is nearly instant because
+    the pooler server accepts the TCP connection and responds with "tenant not
+    found" in ~100 ms rather than timing out.
     """
     m = re.match(
         r"(postgresql|postgres)://([^:@]+):([^@]+)"
@@ -35,12 +38,31 @@ def _build_pooler_url(url: str) -> str | None:
         url,
     )
     if not m:
-        return None
+        return []
     _scheme, _user, password, ref, dbname = m.groups()
-    return (
+
+    # All known Supabase AWS pooler regions (as of mid-2025), most-common first.
+    regions = [
+        "us-east-1",
+        "us-west-1",
+        "us-east-2",
+        "us-west-2",
+        "eu-west-1",
+        "eu-west-2",
+        "eu-west-3",
+        "eu-central-1",
+        "ap-southeast-1",
+        "ap-southeast-2",
+        "ap-northeast-1",
+        "ap-south-1",
+        "ca-central-1",
+        "sa-east-1",
+    ]
+    return [
         f"postgresql://postgres.{ref}:{password}"
-        f"@aws-0-us-east-1.pooler.supabase.com:6543/{dbname}"
-    )
+        f"@aws-0-{region}.pooler.supabase.com:6543/{dbname}"
+        for region in regions
+    ]
 
 
 def _try_pool(url: str) -> SimpleConnectionPool:
@@ -83,26 +105,33 @@ def _get_pool() -> SimpleConnectionPool:
             "Direct Supabase connection failed (%s); trying transaction pooler …", exc
         )
 
-    # 3 — auto-construct pooler URL
-    pooler_url = _build_pooler_url(SUPABASE_URL)
-    if pooler_url:
+    # 3 — try all known Supabase pooler regions automatically
+    pooler_candidates = _build_pooler_urls(SUPABASE_URL)
+    if not pooler_candidates:
+        raise RuntimeError(
+            "SUPABASE_URL does not look like a Supabase psycopg2 URL. "
+            "Check Settings → Database → Connection string → Psycopg2."
+        )
+
+    last_exc: Exception | None = None
+    for candidate in pooler_candidates:
+        # Extract region for logging only (never log the full URL with credentials)
+        region_m = re.search(r"aws-0-([^.]+)", candidate)
+        region_tag = region_m.group(1) if region_m else "?"
         try:
-            _pool = _try_pool(pooler_url)
-            log.info("Connected via auto-derived Supabase transaction pooler")
+            _pool = _try_pool(candidate)
+            log.info("Connected via Supabase transaction pooler (%s)", region_tag)
             return _pool
-        except psycopg2.OperationalError as exc2:
-            log.error("Pooler connection also failed: %s", exc2)
-            raise RuntimeError(
-                "Cannot connect to Supabase via direct URL or pooler. "
-                "Set SUPABASE_POOLER_URL in your environment to the "
-                "Transaction Pooler connection string from "
-                "Supabase → Settings → Database."
-            ) from exc2
+        except psycopg2.OperationalError as exc_p:
+            log.debug("Pooler %s: %s", region_tag, exc_p)
+            last_exc = exc_p
+            _pool = None
 
     raise RuntimeError(
-        "SUPABASE_URL does not look like a Supabase psycopg2 URL. "
-        "Check Settings → Database → Connection string → Psycopg2."
-    )
+        "Cannot connect to Supabase via direct URL or any pooler region. "
+        "Set SUPABASE_POOLER_URL in GitHub Secrets to the Transaction Pooler "
+        "connection string from Supabase → Settings → Database."
+    ) from last_exc
 
 
 @contextmanager
