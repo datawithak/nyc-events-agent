@@ -1,0 +1,30 @@
+# Secrets — never commit
+.env
+
+# Local database (data lives in Supabase)
+*.db
+*.db-journal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs (generated at runtime)
+logs/
+*.log
+
+# Node leftovers (not needed in agent repo)
+node_modules/
+package.json
+package-lock.json
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
