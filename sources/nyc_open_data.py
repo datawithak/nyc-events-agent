@@ -46,11 +46,16 @@ _PUBLIC_EVENT_TYPES = {
 }
 
 # Private/internal permits to explicitly exclude even if they pass type check.
+# Private/internal events to exclude. Matches if the title starts with any of
+# these words — catches "PARTY", "Graduation 2026", "4th Grade Picnic", etc.
+# We do NOT filter "block party", "street party", "pool party" etc. because
+# those are typically public community events (they don't start with bare "party").
 _PRIVATE_TITLE_PATTERN = re.compile(
     r"^(softball|baseball|basketball|tennis|volleyball|hockey|bocce|"
     r"football|soccer|cricket|handball|lacrosse|rugby|archery|kickball|"
     r"miscellaneous|graduation|picnic|birthday|private|school|class|"
-    r"practice|workout|drill)\b",
+    r"practice|workout|drill|party|gathering|meeting|ceremony|rehearsal|"
+    r"banquet|luncheon|reception|seminar|conference|retreat|assembly)\b",
     re.IGNORECASE,
 )
 

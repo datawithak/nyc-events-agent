@@ -60,7 +60,20 @@ CATEGORY_PATTERNS: dict[str, list[str]] = {
     "tech": [r"\btech\b", r"\bhackathon\b", r"\bcoding\b", r"\bdeveloper\b", r"\bai\b"],
     "outdoors": [r"\bpark\b", r"\bhike\b", r"\bnature\b", r"\bbeach\b", r"\boutdoor\b"],
     "education": [r"\bworkshop\b", r"\bclass\b", r"\bseminar\b", r"\blecture\b", r"\btalk\b"],
-    "nightlife": [r"\bnight\s*club\b", r"\bparty\b", r"\bafter[- ]?party\b", r"\brave\b"],
+    "nightlife": [
+        r"\bnight\s*club\b",
+        r"\bnightlife\b",
+        r"\bafter[- ]?party\b",
+        r"\brave\b",
+        r"\bopen\s+bar\b",
+        r"\bdance\s+floor\b",
+        r"\bclub\s+night\b",
+        r"\bbottle\s+service\b",
+        r"\bvip\s+(?:table|booth|entry|access)\b",
+        r"\bnight(?:cap|out)\b",
+        r"\bpool\s+party\b",
+        r"\brooftop\s+party\b",
+    ],
     "festival": [r"\bfestival\b", r"\bfair\b", r"\bparade\b", r"\bblock party\b"],
 }
 
