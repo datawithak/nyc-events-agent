@@ -19,11 +19,38 @@ from utils.http import get_json
 log = logging.getLogger(__name__)
 ENDPOINT = "https://data.cityofnewyork.us/resource/tvpp-9vvx.json"
 
-# Park permit bookings (sports field reservations, court time) are NOT
-# public spectator events — filter them out.
-_PARK_PERMIT = re.compile(
+# Event types from the NYC permit dataset that ARE public spectator events.
+# Anything NOT in this set is a private/internal permit and should be skipped.
+_PUBLIC_EVENT_TYPES = {
+    "special event",
+    "street event",
+    "farmers market",
+    "greenmarket",
+    "plaza partner event",
+    "street fair",
+    "parade",
+    "block party",
+    "film permit",       # include filming as it's public info
+    "concert",
+    "festival",
+    "cultural event",
+    "community event",
+    "flea market",
+    "market",
+    "craft fair",
+    "art fair",
+    "food event",
+    "run",               # 5K, marathon etc are public
+    "race",
+    "walk",
+}
+
+# Private/internal permits to explicitly exclude even if they pass type check.
+_PRIVATE_TITLE_PATTERN = re.compile(
     r"^(softball|baseball|basketball|tennis|volleyball|hockey|bocce|"
-    r"football|soccer|cricket|handball|lacrosse|rugby|archery)\s*[-–]",
+    r"football|soccer|cricket|handball|lacrosse|rugby|archery|kickball|"
+    r"miscellaneous|graduation|picnic|birthday|private|school|class|"
+    r"practice|workout|drill)\b",
     re.IGNORECASE,
 )
 
@@ -54,8 +81,16 @@ class NYCOpenData(Source):
         seen = set()
         for raw in rows:
             title = (raw.get("event_name") or "").strip()
-            if _PARK_PERMIT.match(title):
-                continue  # skip sports field / court permit bookings
+            event_type = (raw.get("event_type") or "").strip().lower()
+
+            # Skip private/internal permits — only keep public events
+            if event_type and event_type not in _PUBLIC_EVENT_TYPES:
+                continue
+            if _PRIVATE_TITLE_PATTERN.match(title):
+                continue
+            if not title or title.lower() in {"miscellaneous", "tbd", "n/a", "na", "none"}:
+                continue
+
             ev = self._parse(raw)
             if ev.hash in seen:  # collapse multi-day permits to one row
                 continue
