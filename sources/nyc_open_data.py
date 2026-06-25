@@ -55,7 +55,18 @@ _PRIVATE_TITLE_PATTERN = re.compile(
     r"football|soccer|cricket|handball|lacrosse|rugby|archery|kickball|"
     r"miscellaneous|graduation|picnic|birthday|private|school|class|"
     r"practice|workout|drill|party|gathering|meeting|ceremony|rehearsal|"
-    r"banquet|luncheon|reception|seminar|conference|retreat|assembly)\b",
+    r"banquet|luncheon|reception|seminar|conference|retreat|assembly|"
+    # NYC Parks field-booking / permit placeholders
+    r"muts|hold[: ]|tbd|closed|closure|rain\s+date|construction|"
+    r"parks\s+event|park\s+event|filming|film\s+shoot|photo\s+shoot|"
+    r"fwc\d|fifa\s+match)\b",
+    re.IGNORECASE,
+)
+
+# Also exclude titles that are just vague single/short words unlikely to be events
+_VAGUE_TITLE = re.compile(
+    r"^(celebration|event|gathering|program|programming|closed|closure|"
+    r"hold|tbd|n/?a|none|unknown|untitled)\s*$",
     re.IGNORECASE,
 )
 
@@ -93,7 +104,9 @@ class NYCOpenData(Source):
                 continue
             if _PRIVATE_TITLE_PATTERN.match(title):
                 continue
-            if not title or title.lower() in {"miscellaneous", "tbd", "n/a", "na", "none"}:
+            if _VAGUE_TITLE.match(title):
+                continue
+            if not title or title.lower() in {"miscellaneous", "tbd", "n/a", "na", "none", "parks event", "park event", "closed"}:
                 continue
 
             ev = self._parse(raw)
