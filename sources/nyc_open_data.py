@@ -45,30 +45,61 @@ _PUBLIC_EVENT_TYPES = {
     "walk",
 }
 
-# Private/internal permits to explicitly exclude even if they pass type check.
-# Private/internal events to exclude. Matches if the title starts with any of
-# these words — catches "PARTY", "Graduation 2026", "4th Grade Picnic", etc.
-# We do NOT filter "block party", "street party", "pool party" etc. because
-# those are typically public community events (they don't start with bare "party").
-_PRIVATE_TITLE_PATTERN = re.compile(
+# ── Private/internal permit filters ──────────────────────────────────────────
+# We use three separate lists to avoid regex-boundary issues with a single
+# giant alternation pattern.
+
+# 1. Titles that START with a private/sports/internal keyword.
+#    re.match() anchors at the start, so no ^ needed in the pattern.
+_PREFIX_BLOCK = re.compile(
     r"^(softball|baseball|basketball|tennis|volleyball|hockey|bocce|"
     r"football|soccer|cricket|handball|lacrosse|rugby|archery|kickball|"
-    r"miscellaneous|graduation|picnic|birthday|private|school|class|"
-    r"practice|workout|drill|party|gathering|meeting|ceremony|rehearsal|"
-    r"banquet|luncheon|reception|seminar|conference|retreat|assembly|"
-    # NYC Parks field-booking / permit placeholders
-    r"muts|hold[: ]|tbd|closed|closure|rain\s+date|construction|"
-    r"parks\s+event|park\s+event|filming|film\s+shoot|photo\s+shoot|"
-    r"fwc\d|fifa\s+match)\b",
+    r"graduation|picnic|birthday|private|practice|workout|drill|"
+    r"gathering|meeting|ceremony|rehearsal|banquet|luncheon|reception|"
+    r"seminar|conference|retreat|assembly|barbecue|bbq|cookout|"
+    # NYC Parks internal placeholders — note: no \b needed after [: ] because
+    # re.match already consumed to the right position; we just need something
+    # after the keyword to separate "HOLD: EVENT" from a real "Hold On" title.
+    r"muts\b|tbd\b|construction\b|"
+    r"parks\s+event\b|park\s+event\b|"
+    r"film\s+shoot\b|photo\s+shoot\b|"
+    # FIFA / World Cup blackout dates (FWC2026, FWC 2026, FIFA Match …)
+    r"fwc\s*\d+|fifa\b)",
     re.IGNORECASE,
 )
 
-# Also exclude titles that are just vague single/short words unlikely to be events
-_VAGUE_TITLE = re.compile(
-    r"^(celebration|event|gathering|program|programming|closed|closure|"
-    r"hold|tbd|n/?a|none|unknown|untitled)\s*$",
+# 2. Keywords that can appear ANYWHERE in the title.
+#    Use re.search() to catch "Cherry Lawn Closure", "Rain Date - Parade", etc.
+_ANYWHERE_BLOCK = re.compile(
+    r"\b(closure|closed|rain\s+date|filming|film\s+shoot|photo\s+shoot)\b"
+    # "HOLD" as a standalone word/prefix (catches "HOLD:", "HOLD -", "HOLD EVENT")
+    r"|\bhold\b"
+    # School event designations always followed by a number: "PS 270", "IS 270Q", "JHS 70", "CSD 2"
+    # Require digit right after abbreviation to avoid blocking "MS Walk" / "HS Jazz Fest" etc.
+    r"|\b(ps|is|jhs|ms|hs|csd)\s*[/\\]?\s*(ps|is|jhs|ms|hs|csd)?\s*\d"
+    r"|\bdistrict\s+\d"
+    # Generic private-school/permit language anywhere in title
+    r"|\b(outdoor\s+learning|learning\s+permit|school\s+carnival|"
+    r"school\s+fair|school\s+field\s+trip)\b",
     re.IGNORECASE,
 )
+
+# 3. Titles that are EXACTLY (or nearly) a single vague word — no real event info.
+_VAGUE_TITLE = re.compile(
+    r"^(celebration|event|gathering|program|programming|closed|closure|"
+    r"hold|tbd|n/?a|none|unknown|untitled|party|barbecue|bbq|cookout|"
+    r"picnic|rehearsal|ceremony|meeting|assembly|seminar|conference)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_junk_title(title: str) -> bool:
+    """Return True if the title looks like a private/internal permit."""
+    return bool(
+        _PREFIX_BLOCK.match(title)
+        or _ANYWHERE_BLOCK.search(title)
+        or _VAGUE_TITLE.match(title)
+    )
 
 
 class NYCOpenData(Source):
@@ -102,11 +133,9 @@ class NYCOpenData(Source):
             # Skip private/internal permits — only keep public events
             if event_type and event_type not in _PUBLIC_EVENT_TYPES:
                 continue
-            if _PRIVATE_TITLE_PATTERN.match(title):
-                continue
-            if _VAGUE_TITLE.match(title):
-                continue
             if not title or title.lower() in {"miscellaneous", "tbd", "n/a", "na", "none", "parks event", "park event", "closed"}:
+                continue
+            if _is_junk_title(title):
                 continue
 
             ev = self._parse(raw)
