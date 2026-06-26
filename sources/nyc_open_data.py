@@ -19,6 +19,24 @@ from utils.http import get_json
 log = logging.getLogger(__name__)
 ENDPOINT = "https://data.cityofnewyork.us/resource/tvpp-9vvx.json"
 
+# Keywords that signal an event is genuinely family/kid-oriented.
+# Only events whose title or event_type matches get the "family"/"kids" audience tag.
+# Everything else gets no audience tag — NYC Open Data permits cover everything from
+# weddings to construction sites; we cannot assume "family-friendly" by default.
+_FAMILY_KW = re.compile(
+    r"\b(family|families|kid s?|kids?|children|child|toddler|youth|baby|babies|"
+    r"junior|teen|student|school|playground|puppet|storytime|story\s*time|"
+    r"sesame|disney|carnival|circus|magic\s*show|bounce|petting\s*zoo)\b",
+    re.IGNORECASE,
+)
+
+
+def _infer_audiences(title: str, event_type: str = "") -> list[str]:
+    """Return ['family', 'kids'] only when the title/type explicitly signals it."""
+    if _FAMILY_KW.search(f"{title} {event_type}"):
+        return ["family", "kids"]
+    return []
+
 # Event types from the NYC permit dataset that ARE public spectator events.
 # Anything NOT in this set is a private/internal permit and should be skipped.
 _PUBLIC_EVENT_TYPES = {
@@ -169,6 +187,9 @@ class NYCOpenData(Source):
             price_min=0,
             price_max=0,
             categories=["festival", "public"],
-            audiences=["family"],  # permitted street events are family-friendly by default
+            audiences=_infer_audiences(
+                raw.get("event_name") or "",
+                raw.get("event_type") or "",
+            ),
             raw=raw,
         )
