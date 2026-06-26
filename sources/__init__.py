@@ -18,12 +18,13 @@ from sources import (  # noqa: F401
     secret_nyc,
     lincoln_center,
     eventbrite_kids,
+    nyc_parks,           # HTML scraper — works from residential IPs
 )
 
 # Disabled by default — endpoints are bot-blocked or require a calendar ID.
 # Uncomment once you've replaced the placeholder URL in the module with
 # a working one.
-# from sources import nyc_parks, nypl, bpl, qpl, eventbrite_rss  # noqa: F401
+# from sources import nypl, bpl, qpl, eventbrite_rss  # noqa: F401
 
 
 def all_sources() -> list[Source]:
