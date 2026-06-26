@@ -46,6 +46,7 @@ def run_source(src: Source) -> tuple[int, int, int]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scrape NYC events into SQLite.")
     parser.add_argument("--only", help="Comma-separated source names to run (default: all enabled).")
+    parser.add_argument("--skip", help="Comma-separated source names to exclude from this run.")
     parser.add_argument("--list", action="store_true", help="List sources and exit.")
     parser.add_argument("--stats", action="store_true", help="Print DB stats and exit.")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -75,7 +76,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     only = set(args.only.split(",")) if args.only else None
-    to_run = [s for s in sources if (only is None or s.name in only) and s.is_enabled()]
+    skip = set(args.skip.split(",")) if args.skip else set()
+    to_run = [
+        s for s in sources
+        if (only is None or s.name in only) and s.name not in skip and s.is_enabled()
+    ]
     skipped = [s for s in sources if s not in to_run]
 
     purged = purge_past_events()

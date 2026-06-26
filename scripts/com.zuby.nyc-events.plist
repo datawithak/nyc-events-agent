@@ -9,7 +9,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-lc</string>
-        <string>cd "/Users/zuby/AI Building/nyc-events-agent" &amp;&amp; ./.venv/bin/python main.py</string>
+        <string>cd "/Users/zuby/AI Building/nyc-events-agent" &amp;&amp; ./.venv/bin/python main.py --only eventbrite_kids</string>
     </array>
 
     <!-- Run every night at 2:00 AM. -->

@@ -37,7 +37,9 @@ jobs:
           TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
           SEATGEEK_CLIENT_ID: ${{ secrets.SEATGEEK_CLIENT_ID }}
           SEATGEEK_CLIENT_SECRET: ${{ secrets.SEATGEEK_CLIENT_SECRET }}
-        run: python main.py -v
+        # eventbrite_kids returns 405 from GitHub Actions datacenter IPs.
+        # It runs via a local cron on a Mac instead (see scripts/local_cron.sh).
+        run: python main.py --skip eventbrite_kids -v
 
       - name: Upload logs on failure
         if: failure()
