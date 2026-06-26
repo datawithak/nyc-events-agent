@@ -17,6 +17,7 @@ from sources import (  # noqa: F401
     yelp_events,
     secret_nyc,
     lincoln_center,
+    eventbrite_kids,
 )
 
 # Disabled by default — endpoints are bot-blocked or require a calendar ID.
